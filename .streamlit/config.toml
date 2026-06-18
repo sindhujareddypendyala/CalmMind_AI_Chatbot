@@ -1,0 +1,10 @@
+[client]
+# Disable default multi-page sidebar navigation links
+showSidebarNavigation = false
+
+[theme]
+primaryColor = "#2E8B57"
+backgroundColor = "#FAFAF7"
+secondaryBackgroundColor = "#EAF2EC"
+textColor = "#2F4F4F"
+font = "sans serif"
