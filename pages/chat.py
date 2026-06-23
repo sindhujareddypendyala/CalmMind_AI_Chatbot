@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import uuid
 import time
 import pandas as pd
@@ -30,19 +31,19 @@ def format_message_to_html(text):
     
     return html
 
-def render_custom_chat_input():
+def render_custom_chat_input(processing=False):
     # Custom HTML/JS chat input field combining text input and mic trigger in one block
     chat_input_html = """
     <div style="font-family: 'Outfit', sans-serif; display: flex; flex-direction: column; align-items: center; width: 100%; box-sizing: border-box; padding: 2px 0;">
         <div style="background-color: white; border: 1px solid rgba(46,139,87,0.2); border-radius: 24px; padding: 8px 16px; display: flex; align-items: center; width: 100%; box-shadow: 0 4px 15px rgba(0,0,0,0.04); box-sizing: border-box; margin-bottom: 0px;">
             <form id="chat-form" action="" method="GET" target="_parent" style="display: flex; align-items: center; width: 100%; margin: 0; padding: 0;">
-                <input type="text" id="chat-input-field" name="user_msg" placeholder="How are you feeling today?" style="flex-grow: 1; border: none; outline: none; font-size: 0.95rem; font-family: 'Outfit', sans-serif; color: #2F4F4F; background: transparent; padding: 4px 0;">
+                <input type="text" id="chat-input-field" name="user_msg" placeholder="__PLACEHOLDER__" __DISABLED__ style="flex-grow: 1; border: none; outline: none; font-size: 0.95rem; font-family: 'Outfit', sans-serif; color: #2F4F4F; background: transparent; padding: 4px 0;">
                 
-                <button id="mic-btn" type="button" style="background: none; border: none; color: #777; cursor: pointer; padding: 0 12px; display: flex; align-items: center; justify-content: center; outline: none; transition: color 0.2s;">
+                <button id="mic-btn" type="button" __DISABLED__ style="background: none; border: none; color: #777; cursor: pointer; padding: 0 12px; display: flex; align-items: center; justify-content: center; outline: none; transition: color 0.2s;">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
                 </button>
                 
-                <button id="send-btn" type="submit" style="background-color: #2E8B57; color: white; border: none; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; outline: none; transition: background-color 0.2s; padding: 0;">
+                <button id="send-btn" type="submit" __DISABLED__ style="background-color: __SEND_COLOR__; color: white; border: none; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; outline: none; transition: background-color 0.2s; padding: 0;">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-left: 2px;"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
                 </button>
             </form>
@@ -85,12 +86,16 @@ def render_custom_chat_input():
             
             micBtn.addEventListener('click', (e) => {
                 e.preventDefault();
-                if (isListening) {
-                    recognition.stop();
-                } else {
-                    input.placeholder = 'Listening... Speak now.';
-                    input.value = '';
-                    recognition.start();
+                try {
+                    if (isListening) {
+                        recognition.stop();
+                    } else {
+                        input.placeholder = 'Listening... Speak now.';
+                        input.value = '';
+                        recognition.start();
+                    }
+                } catch (err) {
+                    input.placeholder = 'Speech error: ' + err.message;
                 }
             });
             
@@ -132,10 +137,269 @@ def render_custom_chat_input():
         }
     </script>
     """
+    chat_input_html = (
+        chat_input_html
+        .replace("__DISABLED__", "disabled" if processing else "")
+        .replace(
+            "__PLACEHOLDER__",
+            "CalmMind is thinking..." if processing else "How are you feeling today?"
+        )
+        .replace("__SEND_COLOR__", "#888" if processing else "#2E8B57")
+    )
     escaped_html = chat_input_html.replace('"', '&quot;').replace('\n', ' ')
     st.markdown(
         f'<iframe srcdoc="{escaped_html}" width="100%" height="60" style="border: none; overflow: hidden;" scrolling="no" allow="microphone; clipboard-write;"></iframe>',
         unsafe_allow_html=True
+    )
+
+
+def _message_value(message, key, default=None):
+    """Read values from sqlite rows or dictionaries."""
+    try:
+        value = message[key]
+        return default if value is None else value
+    except (KeyError, TypeError, IndexError):
+        return default
+
+
+def _unique_title_from_first_message(session_id, first_message, max_length=24):
+    """Create a compact, unique session title from the first user message."""
+    normalized = re.sub(r"\s+", " ", str(first_message or "")).strip()
+    if not normalized:
+        normalized = "New Conversation"
+
+    base_title = normalized[:max_length].rstrip(" .,-")
+    existing_titles = {
+        str(session["title"])
+        for session in db.get_all_sessions()
+        if session["session_id"] != session_id
+    }
+
+    candidate = base_title
+    duplicate_number = 2
+    while candidate in existing_titles:
+        suffix = f" ({duplicate_number})"
+        available = max(1, max_length - len(suffix))
+        candidate = f"{base_title[:available].rstrip()}{suffix}"
+        duplicate_number += 1
+
+    return candidate
+
+
+def _render_user_bubble(content):
+    safe_content = (
+        str(content)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\n", "<br>")
+    )
+    st.markdown(
+        f"""
+        <div style="display: flex; justify-content: flex-end; margin-bottom: 12px; width: 100%;">
+            <div class="user-bubble">{safe_content}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _assistant_data(message):
+    """Normalize a stored assistant message into the current response schema."""
+    content = _message_value(message, "content", "")
+    try:
+        parsed = json.loads(content)
+        if not isinstance(parsed, dict):
+            raise ValueError("Assistant content is not a JSON object")
+        return parsed
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {
+            "response": content,
+            "mood": _message_value(message, "mood", "💭 Reflective"),
+            "stress_level": _message_value(message, "stress_level", "Medium"),
+            "confidence_score": _message_value(message, "confidence_score", 85),
+            "recommendations": [],
+            "affirmation": "",
+        }
+
+
+def _assistant_bubble_html(data, response_html, show_cursor=False):
+    mood = data.get("mood", "💭 Reflective")
+    stress = data.get("stress_level", "Medium")
+    confidence = data.get("confidence_score", 85)
+    affirmation = str(data.get("affirmation", "") or "")
+    affirmation_html = ""
+    if affirmation:
+        safe_affirmation = format_message_to_html(affirmation)
+        affirmation_html = (
+            '<div style="border-left: 3px solid #2E8B57; padding-left: 12px; '
+            'margin: 15px 0 5px 0; font-style: italic; color: #555; '
+            'font-size: 0.92rem;">'
+            f'✨ "{safe_affirmation}"</div>'
+        )
+
+    cursor = " ▌" if show_cursor else ""
+    return f"""
+    <div style="display: flex; justify-content: flex-start; margin-bottom: 15px; width: 100%;">
+        <div class="assistant-bubble">
+            <div style="background-color: #EAF2EC; border-radius: 8px; padding: 4px 10px; font-size: 0.8rem; font-weight: 600; color: #2E8B57; margin-bottom: 12px; display: inline-block; border: 1px solid rgba(46, 139, 87, 0.12);">
+                📊 Mood: {mood} &nbsp;|&nbsp; ⚡ Stress: {stress} &nbsp;|&nbsp; 🎯 Conf: {confidence}%
+            </div>
+            <div style="margin-bottom: 10px;">{response_html}{cursor}</div>
+            {affirmation_html if not show_cursor else ""}
+        </div>
+    </div>
+    """
+
+
+def _render_assistant_response(data, animate=False):
+    """Render one assistant response while preserving the typewriter effect."""
+    response_text = str(data.get("response", "") or "")
+    recommendations = data.get("recommendations", [])
+    if not isinstance(recommendations, list):
+        recommendations = []
+
+    response_placeholder = st.empty()
+    if animate and response_text:
+        words = response_text.split()
+        for index in range(1, len(words) + 1):
+            partial_html = format_message_to_html(" ".join(words[:index]))
+            response_placeholder.markdown(
+                _assistant_bubble_html(data, partial_html, show_cursor=True),
+                unsafe_allow_html=True,
+            )
+            time.sleep(0.04)
+
+    response_placeholder.markdown(
+        _assistant_bubble_html(
+            data,
+            format_message_to_html(response_text),
+            show_cursor=False,
+        ),
+        unsafe_allow_html=True,
+    )
+
+    if recommendations:
+        st.write("**Wellness Suggestions:**")
+        columns = st.columns(len(recommendations))
+        for index, recommendation in enumerate(recommendations):
+            with columns[index]:
+                safe_recommendation = format_message_to_html(str(recommendation))
+                st.markdown(
+                    '<div class="wellness-card" style="font-size: 0.9rem; '
+                    'padding: 10px; margin-bottom: 0px; min-height: 80px; '
+                    'display: flex; align-items: center; justify-content: center; '
+                    f'text-align: center;">{safe_recommendation}</div>',
+                    unsafe_allow_html=True,
+                )
+
+
+def _render_thinking_bubble(placeholder):
+    placeholder.markdown(
+        """
+        <div style="display: flex; justify-content: flex-start; margin-bottom: 15px; width: 100%;">
+            <div class="assistant-bubble" style="padding: 14px 20px;">
+                <span style="color: #2E8B57; font-weight: 600;">🌿 CalmMind is thinking</span>
+                <span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _recommended_breathing_type(data):
+    """Return a breathing type only when recommendations explicitly include one."""
+    recommendations = data.get("recommendations", []) if isinstance(data, dict) else []
+    if not isinstance(recommendations, list):
+        return None
+
+    recommendation_text = " ".join(str(item) for item in recommendations).lower()
+    breathing_terms = ("breath", "inhale", "exhale")
+    if not any(term in recommendation_text for term in breathing_terms):
+        return None
+    if "4-7-8" in recommendation_text:
+        return "4-7-8 Breathing"
+    if "calm focus" in recommendation_text or "focus breathing" in recommendation_text:
+        return "Calm Focus Breathing"
+    return "Box Breathing"
+
+
+def _render_breathing_widget(data):
+    breathing_type = _recommended_breathing_type(data)
+    if not breathing_type:
+        return
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown(f"#### 🌬️ Practice {breathing_type} Guide")
+
+    if breathing_type == "4-7-8 Breathing":
+        animation_keyframes = """
+        @keyframes breathing-cycle {
+            0%, 100% { transform: scale(1); opacity: 0.7; }
+            21% { transform: scale(1.6); opacity: 1; }
+            58% { transform: scale(1.6); opacity: 1; }
+            95% { transform: scale(1); opacity: 0.7; }
+        }
+        """
+        cycle_duration = "19s"
+        guide_text = "Inhale (4s) ➡️ Hold (7s) ➡️ Exhale (8s)"
+    else:
+        animation_keyframes = """
+        @keyframes breathing-cycle {
+            0%, 100% { transform: scale(1); opacity: 0.7; }
+            25% { transform: scale(1.6); opacity: 1; }
+            50% { transform: scale(1.6); opacity: 1; }
+            75% { transform: scale(1); opacity: 0.7; }
+        }
+        """
+        cycle_duration = "16s"
+        guide_text = "Inhale (4s) ➡️ Hold (4s) ➡️ Exhale (4s) ➡️ Hold Empty (4s)"
+
+    st.markdown(
+        f"""
+        <style>
+            {animation_keyframes}
+            .breathing-bubble {{
+                width: 120px;
+                height: 120px;
+                border-radius: 50%;
+                background: radial-gradient(circle, #2E8B57 0%, #EAF2EC 100%);
+                box-shadow: 0 0 25px rgba(46, 139, 87, 0.35);
+                animation: breathing-cycle {cycle_duration} infinite ease-in-out;
+                margin: 20px auto;
+            }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    bubble_column, guide_column = st.columns([0.4, 0.6])
+    with bubble_column:
+        st.markdown('<div class="breathing-bubble"></div>', unsafe_allow_html=True)
+    with guide_column:
+        st.write("**Interactive breathing bubble helper active.**")
+        st.write("Follow the expansion of the bubble to guide your breathing:")
+        st.write(guide_text)
+
+
+def _auto_scroll_to_latest():
+    """Smoothly move the parent Streamlit page to the latest chat content."""
+    components.html(
+        """
+        <script>
+            window.setTimeout(() => {
+                const doc = window.parent.document;
+                const anchors = doc.querySelectorAll('[data-calmind-chat-bottom="true"]');
+                const anchor = anchors[anchors.length - 1];
+                if (anchor) {
+                    anchor.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                }
+            }, 80);
+        </script>
+        """,
+        height=0,
+        width=0,
     )
 
 def show():
@@ -147,11 +411,11 @@ def show():
     <style>
         /* Base styles for all buttons in sidebar horizontal blocks (history items) */
         [data-testid="stSidebar"] [data-testid="stSidebarUserContent"] div[data-testid="stHorizontalBlock"] div.stButton button {
-            font-size: 0.76rem !important;
-            padding: 2px 4px !important;
-            min-height: 22px !important;
-            height: 22px !important;
-            line-height: 22px !important;
+            font-size: 0.72rem !important;
+            padding: 1px 3px !important;
+            min-height: 18px !important;
+            height: 18px !important;
+            line-height: 18px !important;
             border-radius: 6px !important;
             margin-bottom: 0px !important;
             background-color: transparent !important;
@@ -189,13 +453,13 @@ def show():
         [data-testid="stSidebar"] [data-testid="stSidebarUserContent"] div[data-testid="stHorizontalBlock"] div.stButton button {
             background-color: transparent !important;
             color: #4A5568 !important;
-            font-size: 0.76rem !important;
+            font-size: 0.72rem !important;
             font-weight: 400 !important;
             border-radius: 6px !important;
-            padding: 2px 4px !important;
-            min-height: 22px !important;
-            height: 22px !important;
-            line-height: 22px !important;
+            padding: 1px 3px !important;
+            min-height: 18px !important;
+            height: 18px !important;
+            line-height: 18px !important;
             text-align: left !important;
             justify-content: flex-start !important;
             box-shadow: none !important;
@@ -214,8 +478,8 @@ def show():
             display: flex !important;
             align-items: center !important;
             gap: 0px !important;
-            min-height: 26px !important;
-            height: 26px !important;
+            min-height: 20px !important;
+            height: 20px !important;
         }
         [data-testid="stSidebar"] [data-testid="stSidebarUserContent"] div[data-testid="stHorizontalBlock"]:hover {
             background-color: rgba(46, 139, 87, 0.05) !important;
@@ -302,6 +566,18 @@ def show():
             line-height: 1.6;
             word-wrap: break-word;
         }
+        .thinking-dots span {
+            display: inline-block;
+            color: #2E8B57;
+            font-size: 1.1rem;
+            animation: thinking-pulse 1.2s infinite;
+        }
+        .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+        .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes thinking-pulse {
+            0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
+            30% { opacity: 1; transform: translateY(-2px); }
+        }
     </style>
     """
     st.markdown(SIDEBAR_CUSTOM_CSS, unsafe_allow_html=True)
@@ -329,6 +605,7 @@ def show():
         new_id = uuid.uuid4().hex
         db.create_session(new_id, f"Chat - {datetime.now().strftime('%b %d, %H:%M')}")
         st.session_state.current_session_id = new_id
+        st.session_state.auto_scroll = False
         st.rerun()
         
     st.sidebar.markdown("<p style='font-size: 0.9rem; font-weight: 600; color: #666;'>📜 Previous Chats</p>", unsafe_allow_html=True)
@@ -344,7 +621,7 @@ def show():
         # Highlight active session
         is_active = st.session_state.current_session_id == s["session_id"]
         # Small compact titles (making title size fit better)
-        btn_label = f"💬 {s['title'][:16]}..." if len(s['title']) > 16 else f"💬 {s['title']}"
+        btn_label = f"💬 {s['title'][:18]}..." if len(s['title']) > 18 else f"💬 {s['title']}"
         
         with col_btn:
             if st.button(
@@ -354,6 +631,7 @@ def show():
                 type="primary" if is_active else "secondary"
             ):
                 st.session_state.current_session_id = s["session_id"]
+                st.session_state.auto_scroll = True
                 # Safeguard: prevent typewriter replay on switching
                 s_messages = db.get_session_messages(s["session_id"])
                 if s_messages:
@@ -395,328 +673,272 @@ def show():
 
 # ==================== 1. CHAT COMPANION ====================
 def render_chat_companion(api_key):
-    session_id = st.session_state.current_session_id
-    
-    # Process Speech-to-Text & custom chat input parameters
-    user_msg = st.query_params.get("user_msg", "")
-    voice_input = st.query_params.get("voice_input", "")
-    query_text = user_msg or voice_input
-    
+    if "auto_scroll" not in st.session_state:
+        st.session_state.auto_scroll = False
     if "last_processed_query" not in st.session_state:
         st.session_state.last_processed_query = None
-        
-    if query_text and query_text != st.session_state.last_processed_query:
-        st.session_state.last_processed_query = query_text
-        st.query_params.clear()
-        
-        if not api_key:
-            st.error("Please enter a Gemini API Key in the sidebar to start chatting.")
-        else:
-            with st.spinner("Processing message..."):
-                db.add_message(session_id, "user", query_text)
-                
-                # Auto session renaming (update in-place to protect message history)
-                messages_check = db.get_session_messages(session_id)
-                if len(messages_check) == 1:
-                    title_suggestion = query_text[:20] + "..." if len(query_text) > 20 else query_text
-                    db.update_session_title(session_id, title_suggestion)
-                    
-                # Process assistant response immediately in the same turn (snappy execution)
-                history_messages = db.get_session_messages(session_id)
-                history = [{"role": m["role"], "content": m["content"]} for m in history_messages]
-                
-                ai_data = gemini_service.get_chat_response(history, api_key)
-                mood = ai_data.get("mood", "💭 Reflective")
-                stress = ai_data.get("stress_level", "Medium")
-                confidence = ai_data.get("confidence_score", 85)
-                
-                # Save assistant response
-                db.add_message(
-                    session_id=session_id,
-                    role="assistant",
-                    content=json.dumps(ai_data),
-                    mood=mood,
-                    stress_level=stress,
-                    confidence_score=confidence
-                )
-                
-                # Log mood log
-                db.add_mood_log(
-                    session_id=session_id,
-                    mood=mood,
-                    stress_level=stress,
-                    confidence_score=confidence
-                )
-            st.rerun()
-            
-    # Page Header
-    st.markdown("<h2 style='margin-bottom: 5px;'>💬 Wellness Chat Companion</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='color: #666; font-size: 0.95rem; margin-top: 0px;'>Talk through your thoughts in a safe space.</p>", unsafe_allow_html=True)
-    
-    # Fetch messages
+
+    session_id = st.session_state.current_session_id
+
+    # Read custom text/voice input without processing it before the chat is visible.
+    user_msg = st.query_params.get("user_msg", "")
+    voice_input = st.query_params.get("voice_input", "")
+    query_text = str(user_msg or voice_input or "").strip()
+    pending_message = None
+
+    if query_text:
+        if query_text != st.session_state.last_processed_query:
+            pending_message = query_text
+            st.session_state.last_processed_query = query_text
+            # Clear individual query params to avoid full page reload resets
+            for k in list(st.query_params.keys()):
+                del st.query_params[k]
+    else:
+        # Allow the user to intentionally send the same text again later.
+        st.session_state.last_processed_query = None
+
+    st.markdown(
+        "<h2 style='margin-bottom: 5px;'>💬 Wellness Chat Companion</h2>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<p style='color: #666; font-size: 0.95rem; margin-top: 0px;'>"
+        "Talk through your thoughts in a safe space.</p>",
+        unsafe_allow_html=True,
+    )
+
     messages = db.get_session_messages(session_id)
-    
-    # ------------------ QUICK SUPPORT BUTTONS ------------------
-    st.write("How can I support you right now?")
-    col1, col2, col3, col4, col5 = st.columns(5)
-    
+
+    # Upgrade old generic titles when their first user message is available.
+    first_stored_user_message = next(
+        (
+            _message_value(message, "content", "")
+            for message in messages
+            if _message_value(message, "role") == "user"
+        ),
+        None,
+    )
+    current_session = next(
+        (
+            session
+            for session in db.get_all_sessions()
+            if session["session_id"] == session_id
+        ),
+        None,
+    )
+    if first_stored_user_message and current_session:
+        current_title = str(current_session["title"])
+        generic_title = (
+            current_title in {"First Chat", "New Session", "New Conversation"}
+            or current_title.startswith("Chat - ")
+            or current_title.startswith("Quick Support Re")
+        )
+        if generic_title:
+            db.update_session_title(
+                session_id,
+                _unique_title_from_first_message(
+                    session_id,
+                    first_stored_user_message,
+                ),
+            )
+
+    # Quick Support is an empty-chat starter only.
+    quick_support_placeholder = st.empty()
     quick_prompt = None
-    with col1:
-        if st.button("😰 I'm Stressed", use_container_width=True):
-            quick_prompt = "I feel stressed out. Can you give me some relaxation techniques and guidance?"
-    with col2:
-        if st.button("🤯 I'm Overthinking", use_container_width=True):
-            quick_prompt = "My brain is racing and I'm overthinking everything. Help me focus and calm down."
-    with col3:
-        if st.button("💪 Motivate Me", use_container_width=True):
-            quick_prompt = "I am feeling low on motivation and energy today. Motivate me to take a small step."
-    with col4:
-        if st.button("🌿 Breathing Help", use_container_width=True):
-            quick_prompt = "Can we do a breathing exercise together? Suggest a suitable breathing exercise."
-    with col5:
-        if st.button("❤️ Emotional Support", use_container_width=True):
-            quick_prompt = "I'm having a tough emotional day. I just need some gentle, positive support."
-            
-    # Process Quick Support Prompt
+    if len(messages) == 0 and pending_message is None:
+        with quick_support_placeholder.container():
+            st.write("How can I support you right now?")
+            col1, col2, col3, col4, col5 = st.columns(5)
+
+            with col1:
+                if st.button("😰 I'm Stressed", use_container_width=True):
+                    quick_prompt = (
+                        "I feel stressed out. Can you give me some relaxation "
+                        "techniques and guidance?"
+                    )
+            with col2:
+                if st.button("🤯 I'm Overthinking", use_container_width=True):
+                    quick_prompt = (
+                        "My brain is racing and I'm overthinking everything. "
+                        "Help me focus and calm down."
+                    )
+            with col3:
+                if st.button("💪 Motivate Me", use_container_width=True):
+                    quick_prompt = (
+                        "I am feeling low on motivation and energy today. "
+                        "Motivate me to take a small step."
+                    )
+            with col4:
+                if st.button("🌿 Breathing Help", use_container_width=True):
+                    quick_prompt = (
+                        "Can we do a breathing exercise together? Suggest a "
+                        "suitable breathing exercise."
+                    )
+            with col5:
+                if st.button("❤️ Emotional Support", use_container_width=True):
+                    quick_prompt = (
+                        "I'm having a tough emotional day. I just need some "
+                        "gentle, positive support."
+                    )
+
     if quick_prompt:
-        if not api_key:
-            st.error("Please enter a Gemini API Key in the sidebar to start chatting.")
+        pending_message = quick_prompt
+        quick_support_placeholder.empty()
+
+    # Render all stored messages before making any Gemini request.
+    chat_container = st.container()
+    with chat_container:
+        if not messages and pending_message is None:
+            st.markdown(
+                '<div style="text-align: center; color: #888; padding: 40px 10px;">'
+                "🌿 Hello! I am CalmMind AI. Share your feelings, stress, or goals, "
+                "or click one of the quick support buttons above to begin.</div>",
+                unsafe_allow_html=True,
+            )
         else:
-            db.add_message(session_id, "user", quick_prompt)
-            sessions = db.get_all_sessions()
-            for s in sessions:
-                if s["session_id"] == session_id and s["title"] in ["First Chat", "New Session", f"Chat - {datetime.now().strftime('%b %d, %H:%M')}", "New Conversation"]:
-                    db.update_session_title(session_id, "Quick Support Request")
-            
-            # Process Gemini response immediately for quick support (reducing latency)
+            for message in messages:
+                role = _message_value(message, "role")
+                if role == "user":
+                    _render_user_bubble(_message_value(message, "content", ""))
+                    continue
+
+                data = _assistant_data(message)
+                message_id = _message_value(message, "message_id")
+                is_latest = (
+                    message_id == _message_value(messages[-1], "message_id")
+                )
+                should_animate = (
+                    is_latest
+                    and st.session_state.get("typed_message_id") != message_id
+                )
+                _render_assistant_response(data, animate=should_animate)
+                if should_animate:
+                    st.session_state.typed_message_id = message_id
+
+    # Only show the persisted breathing helper when the latest saved response
+    # explicitly recommends a breathing exercise and no newer turn is pending.
+    if messages and pending_message is None:
+        last_message = messages[-1]
+        if _message_value(last_message, "role") == "assistant":
+            _render_breathing_widget(_assistant_data(last_message))
+
+    # These containers are deliberately created before the input. Filling them
+    # later keeps the newest turn above the bottom-pinned composer.
+    live_turn_container = st.container()
+    live_breathing_container = st.container()
+
+    st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+    input_placeholder = st.empty()
+    with input_placeholder.container():
+        render_custom_chat_input(processing=pending_message is not None)
+
+    st.markdown(
+        '<div style="text-align: center; font-size: 0.74rem; color: #a0aec0; '
+        'font-family: "Outfit", sans-serif; margin-top: 10px; max-width: '
+        '600px; margin-left: auto; margin-right: auto; line-height: 1.4;">'
+        "⚠️ <b>Disclaimer:</b> CalmMind AI is an AI wellness assistant. It is "
+        "not a replacement for professional therapy, clinical advice, or "
+        "mental health counseling.</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div style="text-align: center; font-size: 0.78rem; color: #888; '
+        'font-family: "Outfit", sans-serif; margin-top: 5px; '
+        'margin-bottom: 15px;">Built by <b>Sindhuja Reddy Pendyala</b> | '
+        "For <i>GenAI Internship</i></div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div data-calmind-chat-bottom="true" style="height: 1px;"></div>',
+        unsafe_allow_html=True,
+    )
+
+    if pending_message is not None:
+        is_first_user_message = not any(
+            _message_value(message, "role") == "user"
+            for message in messages
+        )
+
+        db.add_message(session_id, "user", pending_message)
+        if is_first_user_message:
+            db.update_session_title(
+                session_id,
+                _unique_title_from_first_message(
+                    session_id,
+                    pending_message,
+                ),
+            )
+
+        with live_turn_container:
+            _render_user_bubble(pending_message)
+            thinking_placeholder = st.empty()
+            _render_thinking_bubble(thinking_placeholder)
+
+        _auto_scroll_to_latest()
+
+        try:
             history_messages = db.get_session_messages(session_id)
-            history = [{"role": m["role"], "content": m["content"]} for m in history_messages]
-            
+            history = [
+                {
+                    "role": _message_value(message, "role"),
+                    "content": _message_value(message, "content", ""),
+                }
+                for message in history_messages
+            ]
             ai_data = gemini_service.get_chat_response(history, api_key)
+
             mood = ai_data.get("mood", "💭 Reflective")
             stress = ai_data.get("stress_level", "Medium")
             confidence = ai_data.get("confidence_score", 85)
-            
+
             db.add_message(
                 session_id=session_id,
                 role="assistant",
                 content=json.dumps(ai_data),
                 mood=mood,
                 stress_level=stress,
-                confidence_score=confidence
+                confidence_score=confidence,
             )
-            
             db.add_mood_log(
                 session_id=session_id,
                 mood=mood,
                 stress_level=stress,
-                confidence_score=confidence
+                confidence_score=confidence,
             )
-            st.rerun()
-            
-    # ------------------ CHAT MESSAGE RENDERING ------------------
-    chat_container = st.container()
-    
-    with chat_container:
-        if not messages:
-            st.markdown(
-                '<div style="text-align: center; color: #888; padding: 40px 10px;">'
-                '🌿 Hello! I am CalmMind AI. Share your feelings, stress, or goals, '
-                'or click one of the quick support buttons above to begin.</div>',
-                unsafe_allow_html=True
-            )
-        else:
-            for msg in messages:
-                role = msg["role"]
-                content = msg["content"]
-                
-                if role == "user":
-                    # Custom premium user bubble aligned right
-                    safe_content = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
-                    st.markdown(f"""
-                    <div style="display: flex; justify-content: flex-end; margin-bottom: 12px; width: 100%;">
-                        <div class="user-bubble">
-                            {safe_content}
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                else:
-                    # Parse JSON response
-                    try:
-                        data = json.loads(content)
-                        response_text = data.get("response", "")
-                        mood = data.get("mood", "💭 Reflective")
-                        stress = data.get("stress_level", "Medium")
-                        confidence = data.get("confidence_score", 85)
-                        recs = data.get("recommendations", [])
-                        affirmation = data.get("affirmation", "")
-                    except Exception:
-                        response_text = content
-                        mood = msg.get("mood", "💭 Reflective")
-                        stress = msg.get("stress_level", "Medium")
-                        confidence = msg.get("confidence_score", 85)
-                        recs = []
-                        affirmation = ""
-                        
-                    formatted_text = format_message_to_html(response_text)
-                    
-                    # Custom premium assistant bubble aligned left
-                    affirmation_html = f'<div style="border-left: 3px solid #2E8B57; padding-left: 12px; margin: 15px 0 5px 0; font-style: italic; color: #555; font-size: 0.92rem;">✨ "{affirmation}"</div>' if affirmation else ''
-                    
-                    # Initialize typed tracking state
-                    if "typed_message_id" not in st.session_state:
-                        st.session_state.typed_message_id = None
-                        
-                    # Trigger typewriter animation if it is the latest message and not yet played
-                    is_latest = (msg["message_id"] == messages[-1]["message_id"])
-                    
-                    if is_latest and st.session_state.typed_message_id != msg["message_id"]:
-                        placeholder = st.empty()
-                        words = response_text.split(" ")
-                        for idx in range(1, len(words) + 1):
-                            partial = " ".join(words[:idx])
-                            formatted_partial = format_message_to_html(partial)
-                            placeholder.markdown(f"""
-                            <div style="display: flex; justify-content: flex-start; margin-bottom: 15px; width: 100%;">
-                                <div class="assistant-bubble">
-                                    <div style="background-color: #EAF2EC; border-radius: 8px; padding: 4px 10px; font-size: 0.8rem; font-weight: 600; color: #2E8B57; margin-bottom: 12px; display: inline-block; border: 1px solid rgba(46, 139, 87, 0.12);">
-                                        📊 Mood: {mood} &nbsp;|&nbsp; ⚡ Stress: {stress} &nbsp;|&nbsp; 🎯 Conf: {confidence}%
-                                    </div>
-                                    <div style="margin-bottom: 10px;">{formatted_partial} ▌</div>
-                                </div>
-                            </div>
-                            """, unsafe_allow_html=True)
-                            time.sleep(0.04) # Speed of typing
-                            
-                        # Final completed render with affirmations
-                        placeholder.markdown(f"""
-                        <div style="display: flex; justify-content: flex-start; margin-bottom: 15px; width: 100%;">
-                            <div class="assistant-bubble">
-                                <div style="background-color: #EAF2EC; border-radius: 8px; padding: 4px 10px; font-size: 0.8rem; font-weight: 600; color: #2E8B57; margin-bottom: 12px; display: inline-block; border: 1px solid rgba(46, 139, 87, 0.12);">
-                                    📊 Mood: {mood} &nbsp;|&nbsp; ⚡ Stress: {stress} &nbsp;|&nbsp; 🎯 Conf: {confidence}%
-                                </div>
-                                <div style="margin-bottom: 10px;">{formatted_text}</div>
-                                {affirmation_html}
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        st.session_state.typed_message_id = msg["message_id"]
-                    else:
-                        # Direct render
-                        st.markdown(f"""
-                        <div style="display: flex; justify-content: flex-start; margin-bottom: 15px; width: 100%;">
-                            <div class="assistant-bubble">
-                                <div style="background-color: #EAF2EC; border-radius: 8px; padding: 4px 10px; font-size: 0.8rem; font-weight: 600; color: #2E8B57; margin-bottom: 12px; display: inline-block; border: 1px solid rgba(46, 139, 87, 0.12);">
-                                    📊 Mood: {mood} &nbsp;|&nbsp; ⚡ Stress: {stress} &nbsp;|&nbsp; 🎯 Conf: {confidence}%
-                                </div>
-                                <div style="margin-bottom: 10px;">{formatted_text}</div>
-                                {affirmation_html}
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    
-                    # Recommendations Cards
-                    if recs:
-                        st.write("**Wellness Suggestions:**")
-                        cols = st.columns(len(recs))
-                        for idx, rec in enumerate(recs):
-                            with cols[idx]:
-                                st.markdown(
-                                    f'<div class="wellness-card" style="font-size: 0.9rem; padding: 10px; margin-bottom: 0px; min-height: 80px; display: flex; align-items: center; justify-content: center; text-align: center;">'
-                                    f'{rec}'
-                                    f'</div>',
-                                    unsafe_allow_html=True
-                                )
-                                    
-    # ------------------ BREATHING EXERCISE BUBBLE ------------------
-    # If a breathing exercise is suggested or in the context, render a pulsing visual helper
-    if messages:
-        last_msg = messages[-1]
-        is_breathing_active = False
-        breathing_type = "Box Breathing"
-        
-        if last_msg["role"] == "assistant":
-            try:
-                data = json.loads(last_msg["content"])
-                recs_str = " ".join(data.get("recommendations", []))
-                resp_str = data.get("response", "")
-                if "breath" in recs_str.lower() or "breath" in resp_str.lower() or "inhale" in resp_str.lower():
-                    is_breathing_active = True
-                    if "4-7-8" in resp_str or "4-7-8" in recs_str:
-                        breathing_type = "4-7-8 Breathing"
-                    elif "focus" in resp_str.lower():
-                        breathing_type = "Calm Focus Breathing"
-            except Exception:
-                pass
-                
-        if is_breathing_active:
-            st.markdown("<hr>", unsafe_allow_html=True)
-            st.markdown(f"#### 🌬️ Practice {breathing_type} Guides")
-            
-            # Setup specific animation timing based on exercise
-            # Box breathing: 4s inhale, 4s hold, 4s exhale, 4s hold
-            if breathing_type == "4-7-8 Breathing":
-                animation_keyframes = """
-                @keyframes breathing-cycle {
-                    0%, 100% { transform: scale(1); opacity: 0.7; }
-                    21% { transform: scale(1.6); opacity: 1; }      /* Inhale 4s (4/19 = 21%) */
-                    58% { transform: scale(1.6); opacity: 1; }      /* Hold 7s (11/19 = 58%) */
-                    95% { transform: scale(1); opacity: 0.7; }      /* Exhale 8s */
-                }
-                """
-                cycle_duration = "19s"
-                guide_text = "Inhale (4s) ➡️ Hold (7s) ➡️ Exhale (8s)"
-            else:
-                animation_keyframes = """
-                @keyframes breathing-cycle {
-                    0%, 100% { transform: scale(1); opacity: 0.7; }
-                    25% { transform: scale(1.6); opacity: 1; }      /* Inhale 4s */
-                    50% { transform: scale(1.6); opacity: 1; }      /* Hold 4s */
-                    75% { transform: scale(1); opacity: 0.7; }      /* Exhale 4s */
-                }
-                """
-                cycle_duration = "16s"
-                guide_text = "Inhale (4s) ➡️ Hold (7s) ➡️ Exhale (4s) ➡️ Hold Empty (4s)"
-                
-            BREATHING_CSS = f"""
-            <style>
-                {animation_keyframes}
-                .breathing-bubble {{
-                    width: 120px;
-                    height: 120px;
-                    border-radius: 50%;
-                    background: radial-gradient(circle, #2E8B57 0%, #EAF2EC 100%);
-                    box-shadow: 0 0 25px rgba(46, 139, 87, 0.35);
-                    animation: breathing-cycle {cycle_duration} infinite ease-in-out;
-                    margin: 20px auto;
-                }}
-            </style>
-            """
-            st.markdown(BREATHING_CSS, unsafe_allow_html=True)
-            
-            b_col1, b_col2 = st.columns([0.4, 0.6])
-            with b_col1:
-                st.markdown('<div class="breathing-bubble"></div>', unsafe_allow_html=True)
-            with b_col2:
-                st.write(f"**Interactive breathing bubble helper active.**")
-                st.write("Follow the expansion of the bubble to guide your breathing:")
-    # ------------------ USER INPUT AREA ------------------
-    st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
-    render_custom_chat_input()
-    st.markdown(
-        "<div style='text-align: center; font-size: 0.74rem; color: #a0aec0; font-family: \"Outfit\", sans-serif; margin-top: 10px; max-width: 600px; margin-left: auto; margin-right: auto; line-height: 1.4;'>"
-        "⚠️ <b>Disclaimer:</b> CalmMind AI is an AI wellness assistant. It is not a replacement for professional therapy, clinical advice, or mental health counseling."
-        "</div>",
-        unsafe_allow_html=True
-    )
-    st.markdown(
-        "<div style='text-align: center; font-size: 0.78rem; color: #888; font-family: \"Outfit\", sans-serif; margin-top: 5px; margin-bottom: 15px;'>"
-        "Built by <b>Sindhuja Reddy Pendyala</b> | For <i>GenAI Internship</i>"
-        "</div>", 
-        unsafe_allow_html=True
-    )
 
+            saved_messages = db.get_session_messages(session_id)
+            if saved_messages:
+                st.session_state.typed_message_id = _message_value(
+                    saved_messages[-1],
+                    "message_id",
+                )
 
+            thinking_placeholder.empty()
+            with thinking_placeholder.container():
+                _render_assistant_response(ai_data, animate=True)
+
+            with live_breathing_container:
+                _render_breathing_widget(ai_data)
+
+        except Exception:
+            thinking_placeholder.empty()
+            with thinking_placeholder.container():
+                st.error(
+                    "I couldn't generate a response just now. Your message is "
+                    "still saved—please try again in a moment."
+                )
+
+        # Restore the same bottom composer locally instead of rerunning the page.
+        input_placeholder.empty()
+        with input_placeholder.container():
+            render_custom_chat_input(processing=False)
+
+        st.session_state.auto_scroll = False
+        _auto_scroll_to_latest()
+
+    elif st.session_state.get("auto_scroll"):
+        st.session_state.auto_scroll = False
+        _auto_scroll_to_latest()
 # ==================== 2. MOOD ANALYTICS ====================
 def render_mood_analytics(api_key):
     st.markdown("<h2>📊 Mood Tracking & Analytics</h2>", unsafe_allow_html=True)
