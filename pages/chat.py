@@ -32,18 +32,14 @@ def format_message_to_html(text):
     return html
 
 def render_custom_chat_input(session_id, processing=False):
-    # Custom HTML/JS chat input field combining text input and mic trigger in one block
+    # Custom HTML/JS chat input field. JavaScript submits to the parent
+    # Streamlit page so Enter works reliably from inside the iframe.
     chat_input_html = """
     <div style="font-family: 'Outfit', sans-serif; display: flex; flex-direction: column; align-items: center; width: 100%; box-sizing: border-box; padding: 2px 0;">
         <div style="background-color: white; border: 1px solid rgba(46,139,87,0.2); border-radius: 24px; padding: 8px 16px; display: flex; align-items: center; width: 100%; box-shadow: 0 4px 15px rgba(0,0,0,0.04); box-sizing: border-box; margin-bottom: 0px;">
             <form id="chat-form" action="" method="GET" target="_parent" style="display: flex; align-items: center; width: 100%; margin: 0; padding: 0;">
                 <input type="hidden" name="session_id" value="__SESSION_ID__">
                 <input type="text" id="chat-input-field" name="user_msg" placeholder="__PLACEHOLDER__" __DISABLED__ style="flex-grow: 1; border: none; outline: none; font-size: 0.95rem; font-family: 'Outfit', sans-serif; color: #2F4F4F; background: transparent; padding: 4px 0;">
-                
-                <button id="mic-btn" type="button" __DISABLED__ style="background: none; border: none; color: #777; cursor: pointer; padding: 0 12px; display: flex; align-items: center; justify-content: center; outline: none; transition: color 0.2s;">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
-                </button>
-                
                 <button id="send-btn" type="submit" __DISABLED__ style="background-color: __SEND_COLOR__; color: white; border: none; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; outline: none; transition: background-color 0.2s; padding: 0;">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-left: 2px;"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
                 </button>
@@ -54,90 +50,49 @@ def render_custom_chat_input(session_id, processing=False):
     <script>
         const form = document.getElementById('chat-form');
         const input = document.getElementById('chat-input-field');
-        const micBtn = document.getElementById('mic-btn');
         const sendBtn = document.getElementById('send-btn');
+        const sessionId = '__SESSION_ID__';
         
         try {
             form.action = window.parent.location.pathname;
         } catch (e) {
             form.action = '/';
         }
-        
-        // Listen to submit to show loading state
-        form.addEventListener('submit', (e) => {
-            if (input.readOnly || input.disabled) {
-                e.preventDefault();
+
+        function submitMessage(event) {
+            if (event) {
+                event.preventDefault();
+            }
+
+            const message = input.value.trim();
+            if (!message || input.readOnly || input.disabled) {
                 return;
             }
+
             input.readOnly = true;
             input.style.color = '#888';
-            micBtn.disabled = true;
             sendBtn.disabled = true;
             sendBtn.style.backgroundColor = '#888';
             input.placeholder = 'Processing message... Please wait.';
-        });
-        
-        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            const recognition = new SpeechRecognition();
-            recognition.continuous = false;
-            recognition.interimResults = false;
-            recognition.lang = 'en-US';
-            
-            let isListening = false;
-            
-            micBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                try {
-                    if (isListening) {
-                        recognition.stop();
-                    } else {
-                        input.placeholder = 'Listening... Speak now.';
-                        input.value = '';
-                        recognition.start();
-                    }
-                } catch (err) {
-                    input.placeholder = 'Speech error: ' + err.message;
-                }
-            });
-            
-            recognition.onstart = () => {
-                isListening = true;
-                micBtn.style.color = '#d9534f'; // Red recording
-                input.placeholder = 'Listening... Speak now.';
-            };
-            
-            recognition.onerror = (event) => {
-                isListening = false;
-                micBtn.style.color = '#777';
-                input.placeholder = 'Speech error: ' + event.error;
-            };
-            
-            recognition.onend = () => {
-                isListening = false;
-                micBtn.style.color = '#777';
-                if (!input.readOnly && !input.disabled) {
-                    input.placeholder = 'How are you feeling today?';
-                }
-            };
-            
-            recognition.onresult = (event) => {
-                const transcript = event.results[0][0].transcript;
-                input.value = transcript;
-                
-                // Disable and show processing voice message state
-                input.readOnly = true;
-                input.style.color = '#888';
-                micBtn.disabled = true;
-                sendBtn.disabled = true;
-                sendBtn.style.backgroundColor = '#888';
-                input.placeholder = 'Processing voice message... Please wait.';
-                
-                form.submit();
-            };
-        } else {
-            micBtn.style.display = 'none';
+
+            let path = '/';
+            try {
+                path = window.parent.location.pathname || '/';
+            } catch (e) {}
+
+            const params = new URLSearchParams();
+            params.set('session_id', sessionId);
+            params.set('user_msg', message);
+            window.parent.location.href = path + '?' + params.toString();
         }
+        
+        form.addEventListener('submit', submitMessage);
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                submitMessage(e);
+            }
+        });
     </script>
     """
     chat_input_html = (
@@ -152,7 +107,7 @@ def render_custom_chat_input(session_id, processing=False):
     )
     escaped_html = chat_input_html.replace('"', '&quot;').replace('\n', ' ')
     st.markdown(
-        f'<iframe srcdoc="{escaped_html}" width="100%" height="60" style="border: none; overflow: hidden;" scrolling="no" allow="microphone; clipboard-write;"></iframe>',
+        f'<iframe srcdoc="{escaped_html}" width="100%" height="60" style="border: none; overflow: hidden;" scrolling="no" allow="clipboard-write;"></iframe>',
         unsafe_allow_html=True
     )
 
@@ -689,10 +644,9 @@ def render_chat_companion(api_key):
 
     session_id = st.session_state.current_session_id
 
-    # Read custom text/voice input without processing it before the chat is visible.
+    # Read custom text input without processing it before the chat is visible.
     user_msg = st.query_params.get("user_msg", "")
-    voice_input = st.query_params.get("voice_input", "")
-    query_text = str(user_msg or voice_input or "").strip()
+    query_text = str(user_msg or "").strip()
     pending_message = None
 
     print(f"[DEBUG] query_params={dict(st.query_params)}")
