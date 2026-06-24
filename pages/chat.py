@@ -31,12 +31,13 @@ def format_message_to_html(text):
     
     return html
 
-def render_custom_chat_input(processing=False):
+def render_custom_chat_input(session_id, processing=False):
     # Custom HTML/JS chat input field combining text input and mic trigger in one block
     chat_input_html = """
     <div style="font-family: 'Outfit', sans-serif; display: flex; flex-direction: column; align-items: center; width: 100%; box-sizing: border-box; padding: 2px 0;">
         <div style="background-color: white; border: 1px solid rgba(46,139,87,0.2); border-radius: 24px; padding: 8px 16px; display: flex; align-items: center; width: 100%; box-shadow: 0 4px 15px rgba(0,0,0,0.04); box-sizing: border-box; margin-bottom: 0px;">
             <form id="chat-form" action="" method="GET" target="_parent" style="display: flex; align-items: center; width: 100%; margin: 0; padding: 0;">
+                <input type="hidden" name="session_id" value="__SESSION_ID__">
                 <input type="text" id="chat-input-field" name="user_msg" placeholder="__PLACEHOLDER__" __DISABLED__ style="flex-grow: 1; border: none; outline: none; font-size: 0.95rem; font-family: 'Outfit', sans-serif; color: #2F4F4F; background: transparent; padding: 4px 0;">
                 
                 <button id="mic-btn" type="button" __DISABLED__ style="background: none; border: none; color: #777; cursor: pointer; padding: 0 12px; display: flex; align-items: center; justify-content: center; outline: none; transition: color 0.2s;">
@@ -64,11 +65,12 @@ def render_custom_chat_input(processing=False):
         
         // Listen to submit to show loading state
         form.addEventListener('submit', (e) => {
-            if (input.disabled) {
+            if (input.readOnly || input.disabled) {
                 e.preventDefault();
                 return;
             }
-            input.disabled = true;
+            input.readOnly = true;
+            input.style.color = '#888';
             micBtn.disabled = true;
             sendBtn.disabled = true;
             sendBtn.style.backgroundColor = '#888';
@@ -114,7 +116,7 @@ def render_custom_chat_input(processing=False):
             recognition.onend = () => {
                 isListening = false;
                 micBtn.style.color = '#777';
-                if (!input.disabled) {
+                if (!input.readOnly && !input.disabled) {
                     input.placeholder = 'How are you feeling today?';
                 }
             };
@@ -124,7 +126,8 @@ def render_custom_chat_input(processing=False):
                 input.value = transcript;
                 
                 // Disable and show processing voice message state
-                input.disabled = true;
+                input.readOnly = true;
+                input.style.color = '#888';
                 micBtn.disabled = true;
                 sendBtn.disabled = true;
                 sendBtn.style.backgroundColor = '#888';
@@ -139,6 +142,7 @@ def render_custom_chat_input(processing=False):
     """
     chat_input_html = (
         chat_input_html
+        .replace("__SESSION_ID__", str(session_id or ""))
         .replace("__DISABLED__", "disabled" if processing else "")
         .replace(
             "__PLACEHOLDER__",
@@ -653,6 +657,11 @@ def show():
         st.session_state.page = "Home"
         st.rerun()
         
+    # Prioritize session_id from query parameters if present (e.g. from iframe form submission)
+    session_id_param = st.query_params.get("session_id", "")
+    if session_id_param:
+        st.session_state.current_session_id = session_id_param
+        
     # Ensure a session is active if on Chat tab
     if not st.session_state.current_session_id and sessions:
         st.session_state.current_session_id = sessions[0]["session_id"]
@@ -686,16 +695,20 @@ def render_chat_companion(api_key):
     query_text = str(user_msg or voice_input or "").strip()
     pending_message = None
 
+    print(f"[DEBUG] query_params={dict(st.query_params)}")
+    print(f"[DEBUG] query_text='{query_text}', last_processed_query='{st.session_state.get('last_processed_query')}'")
+
     if query_text:
         if query_text != st.session_state.last_processed_query:
             pending_message = query_text
             st.session_state.last_processed_query = query_text
-            # Clear individual query params to avoid full page reload resets
-            for k in list(st.query_params.keys()):
-                del st.query_params[k]
+            print(f"[DEBUG] Setting pending_message='{pending_message}'")
+        else:
+            print("[DEBUG] query_text matches last_processed_query, ignoring")
     else:
         # Allow the user to intentionally send the same text again later.
         st.session_state.last_processed_query = None
+        print("[DEBUG] No query_text, resetting last_processed_query")
 
     st.markdown(
         "<h2 style='margin-bottom: 5px;'>💬 Wellness Chat Companion</h2>",
@@ -830,7 +843,7 @@ def render_chat_companion(api_key):
     st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
     input_placeholder = st.empty()
     with input_placeholder.container():
-        render_custom_chat_input(processing=pending_message is not None)
+        render_custom_chat_input(session_id, processing=pending_message is not None)
 
     st.markdown(
         '<div style="text-align: center; font-size: 0.74rem; color: #a0aec0; '
@@ -931,10 +944,14 @@ def render_chat_companion(api_key):
         # Restore the same bottom composer locally instead of rerunning the page.
         input_placeholder.empty()
         with input_placeholder.container():
-            render_custom_chat_input(processing=False)
+            render_custom_chat_input(session_id, processing=False)
 
         st.session_state.auto_scroll = False
         _auto_scroll_to_latest()
+        
+        # Clear individual query params to avoid full page reload resets
+        for k in list(st.query_params.keys()):
+            del st.query_params[k]
 
     elif st.session_state.get("auto_scroll"):
         st.session_state.auto_scroll = False

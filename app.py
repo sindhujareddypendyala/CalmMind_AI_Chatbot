@@ -20,7 +20,7 @@ st.set_page_config(
 # Initialize Session States
 if "page" not in st.session_state:
     # Route directly to Chat page if query params are present (prevents reload redirects to Home)
-    if "user_msg" in st.query_params or "voice_input" in st.query_params:
+    if "user_msg" in st.query_params or "voice_input" in st.query_params or "session_id" in st.query_params:
         st.session_state.page = "Chat"
     else:
         st.session_state.page = "Home"
