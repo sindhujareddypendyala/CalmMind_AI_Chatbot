@@ -3,7 +3,7 @@ import json
 from google import genai
 from google.genai import types
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List
 from dotenv import load_dotenv
 from services.crisis_detector import detect_crisis, crisis_chat_response
 
@@ -94,6 +94,200 @@ def get_client(api_key: str = None) -> genai.Client:
         raise ValueError("Gemini API Key is missing. Please set it in .env or enter it in the sidebar.")
     return genai.Client(api_key=key)
 
+
+def _contains_any(text: str, keywords: List[str]) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
+def _is_unrelated_query(text: str) -> bool:
+    """Best-effort local domain guard used only when Gemini is unavailable."""
+    wellness_keywords = [
+        "feel", "feeling", "mood", "stress", "stressed", "anxiety", "anxious",
+        "panic", "sad", "lonely", "angry", "overthinking", "tired", "sleep",
+        "burnout", "motivation", "motivated", "confidence", "calm", "breathe",
+        "breathing", "mind", "mental", "emotion", "emotional", "wellness",
+        "therapy", "therapist", "journal", "habit", "focus", "relax",
+    ]
+    unrelated_keywords = [
+        "code", "coding", "program", "python", "java", "javascript", "bug",
+        "stock", "weather", "recipe", "math", "calculate", "history",
+        "capital of", "news", "sports", "movie", "song", "translate",
+    ]
+    return (
+        _contains_any(text, unrelated_keywords)
+        and not _contains_any(text, wellness_keywords)
+    )
+
+
+def _build_local_wellness_response(latest_query: str, reason: str = "") -> dict:
+    """Create a useful response when Gemini is unavailable or returns invalid data."""
+    text = str(latest_query or "").strip()
+    lowered = text.lower()
+
+    if _is_unrelated_query(lowered):
+        return {
+            "response": (
+                "I'm specifically designed to support mental wellness and "
+                "emotional wellbeing. Please ask me a wellness-related question."
+            ),
+            "mood": "😐 Neutral",
+            "stress_level": "Low",
+            "confidence_score": 100.0,
+            "recommendations": [
+                "💡 Share how this is affecting your wellbeing",
+                "📝 Reframe your question around stress, emotions, or habits",
+            ],
+            "affirmation": "I can choose conversations that support my wellbeing.",
+        }
+
+    if _contains_any(lowered, ["panic", "anxious", "anxiety", "worried", "nervous", "fear"]):
+        mood = "😰 Anxious"
+        stress = "High" if _contains_any(lowered, ["panic", "can't breathe", "overwhelmed"]) else "Medium"
+        response = (
+            "That sounds really unsettling. Try to bring your attention to this moment: "
+            "name one thing you can see, one thing you can feel, and one thing you can hear. "
+            "You do not have to solve everything at once; the first step is helping your body feel a little safer."
+        )
+        recommendations = [
+            "🌬️ Practice 4-7-8 Breathing for 3 rounds",
+            "🧭 Use the 3-3-3 grounding technique",
+            "📝 Write the main worry and one next step",
+        ]
+        affirmation = "I can slow this moment down and meet it one breath at a time."
+    elif _contains_any(lowered, ["stress", "stressed", "pressure", "overwhelmed", "too much"]):
+        mood = "😰 Anxious"
+        stress = "High" if _contains_any(lowered, ["overwhelmed", "too much", "can't handle"]) else "Medium"
+        response = (
+            "It makes sense that you feel stretched if a lot is landing on you at once. "
+            "Let's reduce the load mentally: pick the one thing that needs attention first, "
+            "then give yourself permission to pause the rest for a few minutes."
+        )
+        recommendations = [
+            "🌿 Practice Box Breathing for 2 minutes",
+            "✅ Choose one small task to finish first",
+            "☕ Take a 5-minute screen and posture break",
+        ]
+        affirmation = "I am allowed to move through today one manageable step at a time."
+    elif _contains_any(lowered, ["overthinking", "racing", "spiral", "can't stop thinking", "ruminating"]):
+        mood = "🤯 Overthinking"
+        stress = "Medium"
+        response = (
+            "A racing mind can make every thought feel urgent, even when it is not. "
+            "Try separating facts from fears: what do you know for sure, and what is your mind predicting? "
+            "That small separation can make the next step clearer."
+        )
+        recommendations = [
+            "📝 Make a two-column facts vs. fears note",
+            "⏱️ Set a 10-minute worry timer, then redirect",
+            "🌬️ Try Calm Focus Breathing",
+        ]
+        affirmation = "My thoughts are signals, not commands."
+    elif _contains_any(lowered, ["sad", "low", "down", "cry", "lonely", "hurt", "heartbroken"]):
+        mood = "😔 Sad"
+        stress = "Medium"
+        response = (
+            "I'm sorry you're carrying that. You do not need to force yourself to be positive right now; "
+            "being honest about feeling low is already a gentle act of care. "
+            "What would feel most supportive in the next 10 minutes: rest, expression, or connection?"
+        )
+        recommendations = [
+            "📝 Write one paragraph without judging it",
+            "❤️ Message someone safe with a simple check-in",
+            "🌤️ Do one small comforting action",
+        ]
+        affirmation = "My feelings deserve care, and I can be gentle with myself."
+    elif _contains_any(lowered, ["angry", "mad", "frustrated", "irritated", "annoyed"]):
+        mood = "😡 Angry"
+        stress = "Medium"
+        response = (
+            "That frustration sounds real. Before reacting, give the feeling a little space so it does not have to drive. "
+            "You might ask: what boundary, need, or disappointment is underneath this anger?"
+        )
+        recommendations = [
+            "🚶 Step away for 5 minutes if you can",
+            "📝 Write what you wish you could say",
+            "💬 Use one clear 'I feel...' sentence",
+        ]
+        affirmation = "I can listen to my anger without letting it control my choices."
+    elif _contains_any(lowered, ["tired", "exhausted", "sleepy", "drained", "burnout", "burned out"]):
+        mood = "😴 Tired"
+        stress = "Medium"
+        response = (
+            "Your energy sounds low, so the kindest plan is a smaller plan. "
+            "Instead of pushing harder, choose the minimum useful next step and protect a pocket of recovery time."
+        )
+        recommendations = [
+            "🔋 Pick one low-effort priority",
+            "💧 Drink water and stretch for 2 minutes",
+            "🌙 Set a gentle wind-down time tonight",
+        ]
+        affirmation = "Rest is part of progress, not a failure of discipline."
+    elif _contains_any(lowered, ["motivate", "motivation", "lazy", "procrastinating", "procrastinate", "stuck"]):
+        mood = "💪 Motivated"
+        stress = "Low"
+        response = (
+            "Feeling stuck does not mean you lack discipline; it usually means the next step is too large or too vague. "
+            "Shrink it until it feels almost too easy, then start there."
+        )
+        recommendations = [
+            "🎯 Define a 5-minute starter task",
+            "✅ Celebrate completion, not perfection",
+            "📌 Remove one distraction before starting",
+        ]
+        affirmation = "Small starts count, and I can build momentum gently."
+    elif _contains_any(lowered, ["happy", "good", "great", "grateful", "proud", "better"]):
+        mood = "😊 Happy"
+        stress = "Low"
+        response = (
+            "I'm glad there is some lightness here. Take a second to notice what helped create it, "
+            "because naming what works makes it easier to return to later."
+        )
+        recommendations = [
+            "📝 Note one thing that supported this mood",
+            "🌱 Repeat one healthy choice tomorrow",
+            "❤️ Share the good moment with someone you trust",
+        ]
+        affirmation = "I am allowed to notice and enjoy good moments."
+    else:
+        mood = "💭 Reflective"
+        stress = "Low"
+        response = (
+            "I'm listening. From what you shared, it may help to slow down and name what is most present for you right now: "
+            "a feeling, a thought, or a need. Once you name it, we can choose a small next step."
+        )
+        recommendations = [
+            "📝 Name the strongest feeling in one word",
+            "🎯 Choose one kind next step",
+            "🌿 Take a short mindful pause",
+        ]
+        affirmation = "I can meet myself honestly and move forward with care."
+
+    if reason in {"missing_key", "api_error"}:
+        response = (
+            "I can't reach the AI service right now, but I can still support you. "
+            + response
+        )
+    elif reason == "invalid_key":
+        response = (
+            "Your Gemini API key looks invalid, so I'm using local support for now. "
+            + response
+        )
+    elif reason == "quota":
+        response = (
+            "The AI service is busy or out of quota right now, so I'm using local support for now. "
+            + response
+        )
+
+    return {
+        "response": response,
+        "mood": mood,
+        "stress_level": stress,
+        "confidence_score": 82.0,
+        "recommendations": recommendations,
+        "affirmation": affirmation,
+    }
+
+
 def get_chat_response(messages: list, api_key: str = None) -> dict:
     """
     Sends the chat history to Gemini and retrieves a structured response.
@@ -106,7 +300,10 @@ def get_chat_response(messages: list, api_key: str = None) -> dict:
     if crisis_result.get("is_crisis"):
         return crisis_chat_response(crisis_result)
         
-    client = get_client(api_key)
+    try:
+        client = get_client(api_key)
+    except ValueError:
+        return _build_local_wellness_response(latest_query, reason="missing_key")
     
     # 2. Format history prompt
     history_prompt = "You are in a conversation. Read the history and respond to the LAST user message in the required JSON format.\n\n"
@@ -152,22 +349,16 @@ def get_chat_response(messages: list, api_key: str = None) -> dict:
             
         except Exception as e:
             error_msg = str(e)
+            print(f"[DEBUG] Error generating content with {model_name}: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             if model_name == "gemini-flash-latest":
-                # Final fallback in case API fails
-                fallback_text = "I am here to support you. Let's take a deep breath together."
                 if "API key not valid" in error_msg or "API_KEY_INVALID" in error_msg or "invalid api key" in error_msg.lower():
-                    fallback_text = "Your Gemini API Key appears to be invalid. Please check the key in your .env or sidebar."
-                elif "ResourceExhausted" in error_msg or "429" in error_msg or "quota" in error_msg.lower():
-                    fallback_text = "I'm currently receiving a high volume of requests. Please take a deep breath and wait a moment before sending your next message."
-                    
-                return {
-                    "response": fallback_text,
-                    "mood": "💭 Reflective",
-                    "stress_level": "Medium",
-                    "confidence_score": 75.0,
-                    "recommendations": ["🌿 Practice Box Breathing", "📝 Journal your thoughts"],
-                    "affirmation": "You are capable of navigating whatever comes your way."
-                }
+                    return _build_local_wellness_response(latest_query, reason="invalid_key")
+                if "ResourceExhausted" in error_msg or "429" in error_msg or "quota" in error_msg.lower():
+                    return _build_local_wellness_response(latest_query, reason="quota")
+
+                return _build_local_wellness_response(latest_query, reason="api_error")
 
 def generate_wellness_plan(user_data: dict, api_key: str = None) -> dict:
     """
