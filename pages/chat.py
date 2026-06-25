@@ -40,84 +40,16 @@ def format_message_to_html(text):
     return html
 
 def render_custom_chat_input(session_id, processing=False):
-    # Custom HTML/JS chat input field. JavaScript submits to the parent
-    # Streamlit page so Enter works reliably from inside the iframe.
-    chat_input_html = """
-    <div style="font-family: 'Outfit', sans-serif; display: flex; flex-direction: column; align-items: center; width: 100%; box-sizing: border-box; padding: 2px 0;">
-        <div style="background-color: white; border: 1px solid rgba(46,139,87,0.2); border-radius: 24px; padding: 8px 16px; display: flex; align-items: center; width: 100%; box-shadow: 0 4px 15px rgba(0,0,0,0.04); box-sizing: border-box; margin-bottom: 0px;">
-            <form id="chat-form" action="" method="GET" target="_parent" style="display: flex; align-items: center; width: 100%; margin: 0; padding: 0;">
-                <input type="hidden" name="session_id" value="__SESSION_ID__">
-                <input type="text" id="chat-input-field" name="user_msg" placeholder="__PLACEHOLDER__" __DISABLED__ style="flex-grow: 1; border: none; outline: none; font-size: 0.95rem; font-family: 'Outfit', sans-serif; color: #2F4F4F; background: transparent; padding: 4px 0;">
-                <button id="send-btn" type="submit" __DISABLED__ style="background-color: __SEND_COLOR__; color: white; border: none; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; outline: none; transition: background-color 0.2s; padding: 0;">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-left: 2px;"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                </button>
-            </form>
-        </div>
-    </div>
-
-    <script>
-        const form = document.getElementById('chat-form');
-        const input = document.getElementById('chat-input-field');
-        const sendBtn = document.getElementById('send-btn');
-        const sessionId = '__SESSION_ID__';
-        
-        try {
-            form.action = window.parent.location.pathname;
-        } catch (e) {
-            form.action = '/';
-        }
-
-        function submitMessage(event) {
-            if (event) {
-                event.preventDefault();
-            }
-
-            const message = input.value.trim();
-            if (!message || input.readOnly || input.disabled) {
-                return;
-            }
-
-            input.readOnly = true;
-            input.style.color = '#888';
-            sendBtn.disabled = true;
-            sendBtn.style.backgroundColor = '#888';
-            input.placeholder = 'Processing message... Please wait.';
-
-            let path = '/';
-            try {
-                path = window.parent.location.pathname || '/';
-            } catch (e) {}
-
-            const params = new URLSearchParams();
-            params.set('session_id', sessionId);
-            params.set('user_msg', message);
-            window.parent.location.href = path + '?' + params.toString();
-        }
-        
-        form.addEventListener('submit', submitMessage);
-        input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                submitMessage(e);
-            }
-        });
-    </script>
-    """
-    chat_input_html = (
-        chat_input_html
-        .replace("__SESSION_ID__", str(session_id or ""))
-        .replace("__DISABLED__", "disabled" if processing else "")
-        .replace(
-            "__PLACEHOLDER__",
-            "CalmMind is thinking..." if processing else "How are you feeling today?"
-        )
-        .replace("__SEND_COLOR__", "#888" if processing else "#2E8B57")
+    """Render Streamlit's cloud-safe chat composer."""
+    message = st.chat_input(
+        "CalmMind is thinking..." if processing else "How are you feeling today?",
+        disabled=processing,
+        key=f"chat_input_{session_id}",
     )
-    escaped_html = chat_input_html.replace('"', '&quot;').replace('\n', ' ')
-    st.markdown(
-        f'<iframe srcdoc="{escaped_html}" width="100%" height="60" style="border: none; overflow: hidden;" scrolling="no" allow="clipboard-write;"></iframe>',
-        unsafe_allow_html=True
-    )
+    if message and str(message).strip():
+        st.session_state.pending_native_message = str(message).strip()
+        st.session_state.current_session_id = session_id
+        st.rerun()
 
 
 def _message_value(message, key, default=None):
@@ -675,7 +607,8 @@ def render_chat_companion(api_key):
 
     # Read custom text input without processing it before the chat is visible.
     user_msg = st.query_params.get("user_msg", "")
-    query_text = str(user_msg or "").strip()
+    native_msg = st.session_state.pop("pending_native_message", "")
+    query_text = str(native_msg or user_msg or "").strip()
     pending_message = None
 
     if query_text:
@@ -936,13 +869,9 @@ def render_chat_companion(api_key):
             with thinking_placeholder.container():
                 _render_assistant_response(ai_data, animate=False)
 
-        # Restore the same bottom composer locally instead of rerunning the page.
-        input_placeholder.empty()
-        with input_placeholder.container():
-            render_custom_chat_input(session_id, processing=False)
-
         st.session_state.auto_scroll = False
         _auto_scroll_to_latest()
+        st.rerun()
         
     elif st.session_state.get("auto_scroll"):
         st.session_state.auto_scroll = False
