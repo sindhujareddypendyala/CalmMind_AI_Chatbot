@@ -6,6 +6,17 @@ from database.db import init_db
 # Load environment variables
 load_dotenv()
 
+
+def get_configured_api_key():
+    """Read Gemini key from environment or Streamlit Cloud secrets."""
+    key = os.getenv("GEMINI_API_KEY", "")
+    if key:
+        return key
+    try:
+        return st.secrets.get("GEMINI_API_KEY", "")
+    except Exception:
+        return ""
+
 # Initialize Database
 init_db()
 
@@ -20,7 +31,7 @@ st.set_page_config(
 # Initialize Session States
 if "page" not in st.session_state:
     # Route directly to Chat page if query params are present (prevents reload redirects to Home)
-    if "user_msg" in st.query_params or "voice_input" in st.query_params or "session_id" in st.query_params:
+    if "user_msg" in st.query_params or "session_id" in st.query_params:
         st.session_state.page = "Chat"
     else:
         st.session_state.page = "Home"
@@ -29,7 +40,7 @@ if "current_session_id" not in st.session_state:
     st.session_state.current_session_id = None
 
 if "api_key" not in st.session_state:
-    st.session_state.api_key = os.getenv("GEMINI_API_KEY", "")
+    st.session_state.api_key = get_configured_api_key()
 
 # Global CSS Injection for Styling and Custom Layout
 GLOBAL_CSS = """

@@ -11,9 +11,17 @@ from database import db
 from services import gemini_service, pdf_service
 import re
 
+def clean_response_text(text):
+    """Remove accidental HTML fragments before displaying chat content."""
+    cleaned = str(text or "")
+    cleaned = re.sub(r"</?\s*(div|span|p|br|script|style|iframe)[^>]*>", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"&lt;/?\s*(div|span|p|br|script|style|iframe)[^&]*&gt;", " ", cleaned, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def format_message_to_html(text):
     # Escape HTML tags first to prevent breaking layouts
-    html = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    html = clean_response_text(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     
     # Replace double line breaks with paragraph breaks
     html = html.replace("\n\n", "<br><br>").replace("\n", "<br>")
@@ -121,13 +129,36 @@ def _message_value(message, key, default=None):
         return default
 
 
-def _unique_title_from_first_message(session_id, first_message, max_length=24):
-    """Create a compact, unique session title from the first user message."""
-    normalized = re.sub(r"\s+", " ", str(first_message or "")).strip()
-    if not normalized:
-        normalized = "New Conversation"
+def _conversation_title_from_message(first_message):
+    """Create a meaningful chat title instead of a truncated prompt preview."""
+    text = re.sub(r"\s+", " ", str(first_message or "")).strip().lower()
+    title_rules = [
+        (("placement", "campus", "job offer"), "Placement Anxiety"),
+        (("interview", "rejected", "selection"), "Interview Setback"),
+        (("exam", "test", "marks", "grade", "study"), "Exam Stress"),
+        (("career", "job", "work", "manager", "office"), "Career Concerns"),
+        (("lonely", "alone", "friend", "relationship"), "Loneliness Support"),
+        (("motivate", "motivation", "lazy", "procrastinat"), "Motivation Support"),
+        (("confidence", "self doubt", "succeed", "failure"), "Confidence Support"),
+        (("anxious", "anxiety", "panic", "worried", "nervous"), "Anxiety Support"),
+        (("stress", "stressed", "pressure", "overwhelmed"), "Stress Support"),
+        (("tired", "exhausted", "sleep", "burnout", "drained"), "Burnout Support"),
+        (("angry", "frustrated", "mad", "irritated"), "Anger Support"),
+        (("sad", "cry", "hurt", "down", "disappointed"), "Emotional Support"),
+        (("goal", "habit", "routine", "plan"), "Wellness Goals"),
+        (("happy", "grateful", "proud", "better"), "Positive Reflection"),
+    ]
 
-    base_title = normalized[:max_length].rstrip(" .,-")
+    for keywords, title in title_rules:
+        if any(keyword in text for keyword in keywords):
+            return title
+
+    return "Daily Reflection" if text else "New Conversation"
+
+
+def _unique_title_from_first_message(session_id, first_message, max_length=28):
+    """Create a compact, unique session title from the first user message."""
+    base_title = _conversation_title_from_message(first_message)[:max_length].rstrip(" .,-")
     existing_titles = {
         str(session["title"])
         for session in db.get_all_sessions()
@@ -170,11 +201,20 @@ def _assistant_data(message):
         parsed = json.loads(content)
         if not isinstance(parsed, dict):
             raise ValueError("Assistant content is not a JSON object")
+        parsed["response"] = clean_response_text(parsed.get("response", ""))
+        parsed["affirmation"] = clean_response_text(parsed.get("affirmation", ""))
+        recommendations = parsed.get("recommendations", [])
+        if isinstance(recommendations, list):
+            parsed["recommendations"] = [
+                clean_response_text(item)
+                for item in recommendations
+                if clean_response_text(item)
+            ]
         return parsed
     except (json.JSONDecodeError, TypeError, ValueError):
         return {
-            "response": content,
-            "mood": _message_value(message, "mood", "💭 Reflective"),
+            "response": clean_response_text(content),
+            "mood": _message_value(message, "mood", "😐 Neutral"),
             "stress_level": _message_value(message, "stress_level", "Medium"),
             "confidence_score": _message_value(message, "confidence_score", 85),
             "recommendations": [],
@@ -182,8 +222,8 @@ def _assistant_data(message):
         }
 
 
-def _assistant_bubble_html(data, response_html, show_cursor=False):
-    mood = data.get("mood", "💭 Reflective")
+def _assistant_bubble_html(data, response_html):
+    mood = data.get("mood", "😐 Neutral")
     stress = data.get("stress_level", "Medium")
     confidence = data.get("confidence_score", 85)
     affirmation = str(data.get("affirmation", "") or "")
@@ -191,49 +231,38 @@ def _assistant_bubble_html(data, response_html, show_cursor=False):
     if affirmation:
         safe_affirmation = format_message_to_html(affirmation)
         affirmation_html = (
-            '<div style="border-left: 3px solid #2E8B57; padding-left: 12px; '
-            'margin: 15px 0 5px 0; font-style: italic; color: #555; '
-            'font-size: 0.92rem;">'
+            '<div style="border-left:3px solid #2E8B57;padding-left:12px;'
+            'margin:15px 0 5px 0;font-style:italic;color:#555;'
+            'font-size:0.92rem;">'
             f'✨ "{safe_affirmation}"</div>'
         )
 
-    cursor = " ▌" if show_cursor else ""
-    return f"""
-    <div style="display: flex; justify-content: flex-start; margin-bottom: 15px; width: 100%;">
-        <div class="assistant-bubble">
-            <div style="background-color: #EAF2EC; border-radius: 8px; padding: 4px 10px; font-size: 0.8rem; font-weight: 600; color: #2E8B57; margin-bottom: 12px; display: inline-block; border: 1px solid rgba(46, 139, 87, 0.12);">
-                📊 Mood: {mood} &nbsp;|&nbsp; ⚡ Stress: {stress} &nbsp;|&nbsp; 🎯 Conf: {confidence}%
-            </div>
-            <div style="margin-bottom: 10px;">{response_html}{cursor}</div>
-            {affirmation_html if not show_cursor else ""}
-        </div>
-    </div>
-    """
+    return (
+        '<div style="display:flex;justify-content:flex-start;margin-bottom:15px;width:100%;">'
+        '<div class="assistant-bubble">'
+        '<div style="background-color:#EAF2EC;border-radius:8px;padding:4px 10px;'
+        'font-size:0.8rem;font-weight:600;color:#2E8B57;margin-bottom:12px;'
+        'display:inline-block;border:1px solid rgba(46,139,87,0.12);">'
+        f'📊 Mood: {mood} &nbsp;|&nbsp; ⚡ Stress: {stress} &nbsp;|&nbsp; 🎯 Conf: {confidence}%'
+        '</div>'
+        f'<div style="margin-bottom:10px;">{response_html}</div>'
+        f'{affirmation_html}'
+        '</div>'
+        '</div>'
+    )
 
 
 def _render_assistant_response(data, animate=False):
-    """Render one assistant response while preserving the typewriter effect."""
+    """Render one assistant response with CSS animation only."""
     response_text = str(data.get("response", "") or "")
     recommendations = data.get("recommendations", [])
     if not isinstance(recommendations, list):
         recommendations = []
 
-    response_placeholder = st.empty()
-    if animate and response_text:
-        words = response_text.split()
-        for index in range(1, len(words) + 1):
-            partial_html = format_message_to_html(" ".join(words[:index]))
-            response_placeholder.markdown(
-                _assistant_bubble_html(data, partial_html, show_cursor=True),
-                unsafe_allow_html=True,
-            )
-            time.sleep(0.04)
-
-    response_placeholder.markdown(
+    st.markdown(
         _assistant_bubble_html(
             data,
             format_message_to_html(response_text),
-            show_cursor=False,
         ),
         unsafe_allow_html=True,
     )
@@ -649,20 +678,16 @@ def render_chat_companion(api_key):
     query_text = str(user_msg or "").strip()
     pending_message = None
 
-    print(f"[DEBUG] query_params={dict(st.query_params)}")
-    print(f"[DEBUG] query_text='{query_text}', last_processed_query='{st.session_state.get('last_processed_query')}'")
-
     if query_text:
         if query_text != st.session_state.last_processed_query:
             pending_message = query_text
             st.session_state.last_processed_query = query_text
-            print(f"[DEBUG] Setting pending_message='{pending_message}'")
-        else:
-            print("[DEBUG] query_text matches last_processed_query, ignoring")
+            for key in ("user_msg", "session_id"):
+                if key in st.query_params:
+                    del st.query_params[key]
     else:
         # Allow the user to intentionally send the same text again later.
         st.session_state.last_processed_query = None
-        print("[DEBUG] No query_text, resetting last_processed_query")
 
     st.markdown(
         "<h2 style='margin-bottom: 5px;'>💬 Wellness Chat Companion</h2>",
@@ -775,7 +800,9 @@ def render_chat_companion(api_key):
                     message_id == _message_value(messages[-1], "message_id")
                 )
                 should_animate = (
-                    is_latest
+                    pending_message is None
+                    and not st.session_state.get("disable_replay_animation", False)
+                    and is_latest
                     and st.session_state.get("typed_message_id") != message_id
                 )
                 _render_assistant_response(data, animate=should_animate)
@@ -854,7 +881,7 @@ def render_chat_companion(api_key):
             ]
             ai_data = gemini_service.get_chat_response(history, api_key)
 
-            mood = ai_data.get("mood", "💭 Reflective")
+            mood = ai_data.get("mood", "😐 Neutral")
             stress = ai_data.get("stress_level", "Medium")
             confidence = ai_data.get("confidence_score", 85)
 
@@ -887,13 +914,27 @@ def render_chat_companion(api_key):
             with live_breathing_container:
                 _render_breathing_widget(ai_data)
 
-        except Exception:
+        except Exception as exc:
+            print(f"[ERROR] Chat response failed: {type(exc).__name__}: {exc}")
             thinking_placeholder.empty()
+            ai_data = {
+                "response": "I'm having a temporary difficulty connecting right now. Please try again in a moment.",
+                "mood": "😐 Neutral",
+                "stress_level": "Low",
+                "confidence_score": 0.0,
+                "recommendations": [],
+                "affirmation": "",
+            }
+            db.add_message(
+                session_id=session_id,
+                role="assistant",
+                content=json.dumps(ai_data),
+                mood=ai_data["mood"],
+                stress_level=ai_data["stress_level"],
+                confidence_score=ai_data["confidence_score"],
+            )
             with thinking_placeholder.container():
-                st.error(
-                    "I couldn't generate a response just now. Your message is "
-                    "still saved—please try again in a moment."
-                )
+                _render_assistant_response(ai_data, animate=False)
 
         # Restore the same bottom composer locally instead of rerunning the page.
         input_placeholder.empty()
@@ -903,10 +944,6 @@ def render_chat_companion(api_key):
         st.session_state.auto_scroll = False
         _auto_scroll_to_latest()
         
-        # Clear individual query params to avoid full page reload resets
-        for k in list(st.query_params.keys()):
-            del st.query_params[k]
-
     elif st.session_state.get("auto_scroll"):
         st.session_state.auto_scroll = False
         _auto_scroll_to_latest()
@@ -1009,18 +1046,11 @@ def render_mood_analytics(api_key):
                 response = model.generate_content(prompt)
                 insights_text = response.text
             except Exception as e:
-                error_msg = str(e)
-                if "ResourceExhausted" in error_msg or "429" in error_msg or "quota" in error_msg.lower():
-                    insights_text = (
-                        "AI Insights are temporarily unavailable due to Gemini API rate limits. "
-                        "We recommend taking a short mindful break and checking again in a few moments."
-                    )
-                else:
-                    insights_text = (
-                        "Based on your mood log history, your most frequent emotional states show moderate overthinking, "
-                        "with stress peaking during specific conversational topics. Consider introducing a 5-minute breathing "
-                        "or walk break when high-stress triggers are detected."
-                    )
+                print(f"[ERROR] Wellness insights failed: {type(e).__name__}: {e}")
+                insights_text = (
+                    "I'm having a temporary difficulty connecting right now. Please try again in a moment. "
+                    "For now, notice your recent mood pattern and choose one small support action for today."
+                )
                 
             st.markdown(
                 f'<div class="wellness-card" style="border-left: 4px solid #2E8B57;">'
@@ -1056,9 +1086,9 @@ def render_wellness_planner(api_key):
         
     if submitted:
         if not name:
-            st.error("Please fill in your name to generate the plan.")
+            st.info("Add your name so the plan can feel more personal.")
         elif not api_key:
-            st.error("Please enter a Gemini API Key in the sidebar to generate the plan.")
+            st.info("I'm having a temporary difficulty connecting right now. Please try again in a moment.")
         else:
             user_data = {
                 "name": name,
@@ -1163,7 +1193,10 @@ def render_wellness_planner(api_key):
 if __name__ == "__main__":
     import os
     if "api_key" not in st.session_state:
-        st.session_state.api_key = os.getenv("GEMINI_API_KEY", "")
+        try:
+            st.session_state.api_key = os.getenv("GEMINI_API_KEY", "") or st.secrets.get("GEMINI_API_KEY", "")
+        except Exception:
+            st.session_state.api_key = os.getenv("GEMINI_API_KEY", "")
     if "current_session_id" not in st.session_state:
         # Always generate a fresh session ID on direct loading to avoid showing historical logs
         import uuid

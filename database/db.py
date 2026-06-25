@@ -91,7 +91,7 @@ def get_session_messages(session_id):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC",
+        "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY message_id ASC",
         (session_id,)
     )
     messages = cursor.fetchall()

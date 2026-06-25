@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from google import genai
 from google.genai import types
 from pydantic import BaseModel
@@ -34,35 +35,60 @@ class WellnessPlanSchema(BaseModel):
 
 # System instructions to lock the bot to the mental wellness domain
 SYSTEM_INSTRUCTION = """
-You are CalmMind AI, a professional, empathetic mental wellness chatbot companion. 
+You are CalmMind AI, a polished, emotionally intelligent mental wellness chatbot companion.
 Your tagline is "Your Personal Mental Wellness Companion".
 
-Core Instructions:
-1. Actively support the user's mental wellness journey by providing empathetic, supportive, and mindfulness-based guidance.
-2. Focus strictly on topics related to mental wellness, stress management, anxiety, overthinking, emotional wellness, motivation, self-confidence, productivity, burnout, and daily wellbeing.
-3. DOMAIN RESTRICTION: If the user asks about anything unrelated to mental wellness (e.g., coding, programming, IT, software, stock prices, weather, recipes, mathematics, history, general knowledge, general web queries), you MUST reply with the exact phrase:
+Product behavior:
+1. Read the full conversation and respond to the LAST user message in context.
+2. If the user uses follow-up language such as "it", "this", "that", "I don't know if I will succeed", infer the active concern from the recent conversation.
+3. Sound warm, natural, specific, and practical. Do not sound like a script.
+4. Focus on emotional support first, then practical next steps.
+5. Do not repeat the same style of response or the same recommendations across turns.
+6. Keep the response concise: usually 3-6 sentences. Avoid long lectures.
+7. Stay within mental wellness, emotional wellbeing, stress, anxiety, confidence, motivation, burnout, productivity, relationships, habits, and daily wellbeing.
+8. DOMAIN RESTRICTION: If the user asks about anything unrelated to mental wellness, reply with the exact phrase:
    "I'm specifically designed to support mental wellness and emotional wellbeing. Please ask me a wellness-related question."
-4. For every user message, analyze and return a structured JSON matching the provided schema:
-   - "response": Your empathetic, responsive, and supportive chatbot response. Keep it conversational and kind.
-   - "mood": The detected mood of the user. Choose exactly one:
+
+Response structure:
+1. Acknowledge the actual emotion or situation.
+2. Show you understand the user's specific context.
+3. Offer grounded support.
+4. Give 2-3 personalized next steps in recommendations.
+
+Examples of good specificity:
+- If the user failed an interview, discuss disappointment, learning from setbacks, confidence rebuilding, and one practical reflection step. Do not jump to breathing.
+- If the user feels lonely, discuss connection, support systems, self-compassion, and one small outreach step.
+- If the user is anxious or panicking, grounding and breathing can be appropriate.
+- If the user discusses goals repeatedly, naturally mention the Personalized Wellness Planner.
+- If the user discusses stress, mention the breathing helper only when stress feels physical, acute, or overwhelming.
+
+Mood detection:
+Choose exactly one mood from this list based on the user's latest message and recent context:
      - "😊 Happy"
      - "😔 Sad"
      - "😰 Anxious"
      - "😡 Angry"
-     - "🤯 Overthinking"
+     - "🤯 Overwhelmed"
      - "💪 Motivated"
      - "😴 Tired"
-     - "💭 Reflective"
      - "😐 Neutral"
-   - "stress_level": "Low", "Medium", or "High"
-   - "confidence_score": An integer percentage between 0 and 100 representing your confidence in mood detection.
-   - "recommendations": A list of 2-3 specific, actionable wellness recommendations. You MUST align the recommendations directly with the user's challenge:
-     * Suggest breathing exercises (e.g., "Practice Box Breathing", "4-7-8 Breathing", "Calm Focus Breathing") ONLY if the user shows stress, anxiety, or overthinking. Do NOT suggest breathing exercises for every single input.
-     * Suggest other coping strategies for other states, e.g. "Practice positive self-talk", "Write down 3 things you are grateful for", "Set one small achievable goal today", "Take a short screen break", or "Try a self-compassion journal entry".
-   - "affirmation": A personalized positive affirmation matching their current state.
 
-You MUST respond strictly in the JSON format matching the schema provided. Do not include any other markdown formatting outside of the JSON block.
+Recommendation rules:
+- Return 2-3 recommendations only.
+- Make each recommendation specific to the user's situation.
+- Breathing exercises are allowed only for anxiety, panic, acute stress, overwhelm, or explicit breathing requests.
+- Do not recommend breathing for interview failure, loneliness, motivation, confidence, sadness, career setbacks, or general reflection unless the user says they feel physically anxious.
+- Include a natural feature suggestion only when relevant:
+  * Stress/anxiety: suggest the breathing helper in chat.
+  * Repeated goals/routines/habits: suggest the Personalized Wellness Planner.
+  * Mood patterns: suggest checking Mood Analytics.
+  * Emotional processing: suggest a short journal-style reflection in the chat.
+
+Return only JSON matching the schema. No markdown outside JSON.
+
 """
+
+CONNECTION_ERROR_RESPONSE = "I'm having a temporary difficulty connecting right now. Please try again in a moment."
 
 CRISIS_RESPONSE = {
     "response": "I hear how much pain you are in right now, and I want you to know that you are not alone. Your life is valuable, and there is support available. Please reach out to someone who can help. You can connect with the Suicide & Crisis Lifeline by calling or texting 988 (available 24/7, free, and confidential in the US/Canada), or contact emergency services. If you have family, friends, or a professional you trust, please consider reaching out to them right now. They want to support you.",
@@ -91,12 +117,38 @@ def get_client(api_key: str = None) -> genai.Client:
     """Configures and returns the GenAI client."""
     key = api_key or os.getenv("GEMINI_API_KEY")
     if not key:
+        try:
+            import streamlit as st
+            key = st.secrets.get("GEMINI_API_KEY", "")
+        except Exception:
+            key = ""
+    if not key:
         raise ValueError("Gemini API Key is missing. Please set it in .env or enter it in the sidebar.")
     return genai.Client(api_key=key)
 
 
 def _contains_any(text: str, keywords: List[str]) -> bool:
     return any(keyword in text for keyword in keywords)
+
+
+def _clean_response_text(text: str) -> str:
+    """Remove accidental HTML fragments from model or stored responses."""
+    cleaned = str(text or "")
+    cleaned = re.sub(r"</?\s*(div|span|p|br|script|style|iframe)[^>]*>", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"&lt;/?\s*(div|span|p|br|script|style|iframe)[^&]*&gt;", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _connection_error_payload() -> dict:
+    return {
+        "response": CONNECTION_ERROR_RESPONSE,
+        "mood": "😐 Neutral",
+        "stress_level": "Low",
+        "confidence_score": 0.0,
+        "recommendations": [],
+        "affirmation": "",
+    }
 
 
 def _is_unrelated_query(text: str) -> bool:
@@ -155,7 +207,7 @@ def _build_local_wellness_response(latest_query: str, reason: str = "") -> dict:
         ]
         affirmation = "I can slow this moment down and meet it one breath at a time."
     elif _contains_any(lowered, ["stress", "stressed", "pressure", "overwhelmed", "too much"]):
-        mood = "😰 Anxious"
+        mood = "🤯 Overwhelmed" if _contains_any(lowered, ["overwhelmed", "too much", "can't handle"]) else "😰 Anxious"
         stress = "High" if _contains_any(lowered, ["overwhelmed", "too much", "can't handle"]) else "Medium"
         response = (
             "It makes sense that you feel stretched if a lot is landing on you at once. "
@@ -169,7 +221,7 @@ def _build_local_wellness_response(latest_query: str, reason: str = "") -> dict:
         ]
         affirmation = "I am allowed to move through today one manageable step at a time."
     elif _contains_any(lowered, ["overthinking", "racing", "spiral", "can't stop thinking", "ruminating"]):
-        mood = "🤯 Overthinking"
+        mood = "🤯 Overwhelmed"
         stress = "Medium"
         response = (
             "A racing mind can make every thought feel urgent, even when it is not. "
@@ -249,7 +301,7 @@ def _build_local_wellness_response(latest_query: str, reason: str = "") -> dict:
         ]
         affirmation = "I am allowed to notice and enjoy good moments."
     else:
-        mood = "💭 Reflective"
+        mood = "😐 Neutral"
         stress = "Low"
         response = (
             "I'm listening. From what you shared, it may help to slow down and name what is most present for you right now: "
@@ -262,27 +314,148 @@ def _build_local_wellness_response(latest_query: str, reason: str = "") -> dict:
         ]
         affirmation = "I can meet myself honestly and move forward with care."
 
-    if reason in {"missing_key", "api_error"}:
-        response = (
-            "I can't reach the AI service right now, but I can still support you. "
-            + response
-        )
-    elif reason == "invalid_key":
-        response = (
-            "Your Gemini API key looks invalid, so I'm using local support for now. "
-            + response
-        )
-    elif reason == "quota":
-        response = (
-            "The AI service is busy or out of quota right now, so I'm using local support for now. "
-            + response
-        )
-
     return {
         "response": response,
         "mood": mood,
         "stress_level": stress,
         "confidence_score": 82.0,
+        "recommendations": recommendations,
+        "affirmation": affirmation,
+    }
+
+
+def _message_allows_breathing(latest_query: str, mood: str) -> bool:
+    lowered = str(latest_query or "").lower()
+    return (
+        mood in {"😰 Anxious", "🤯 Overwhelmed"}
+        or _contains_any(
+            lowered,
+            [
+                "anxious", "anxiety", "panic", "overwhelmed", "can't breathe",
+                "breathing", "breath", "calm down", "racing thoughts",
+            ],
+        )
+    )
+
+
+def _infer_mood_from_text(latest_query: str) -> str:
+    lowered = str(latest_query or "").lower()
+    if _contains_any(lowered, ["happy", "grateful", "proud", "excited", "better", "good today"]):
+        return "😊 Happy"
+    if _contains_any(lowered, ["sad", "lonely", "alone", "cry", "failed", "rejected", "hurt", "disappointed"]):
+        return "😔 Sad"
+    if _contains_any(lowered, ["anxious", "anxiety", "panic", "worried", "nervous", "scared"]):
+        return "😰 Anxious"
+    if _contains_any(lowered, ["angry", "mad", "frustrated", "irritated", "annoyed"]):
+        return "😡 Angry"
+    if _contains_any(lowered, ["overwhelmed", "overthinking", "too much", "pressure", "can't handle", "racing"]):
+        return "🤯 Overwhelmed"
+    if _contains_any(lowered, ["motivate", "motivation", "goal", "productive", "confidence", "succeed"]):
+        return "💪 Motivated"
+    if _contains_any(lowered, ["tired", "exhausted", "drained", "sleepy", "burnout", "burned out"]):
+        return "😴 Tired"
+    return "😐 Neutral"
+
+
+def _normalize_chat_response(data: dict, latest_query: str) -> dict:
+    """Keep model output on-brand, valid, and less repetitive."""
+    valid_moods = {
+        "😊 Happy", "😔 Sad", "😰 Anxious", "😡 Angry",
+        "🤯 Overwhelmed", "💪 Motivated", "😴 Tired", "😐 Neutral",
+    }
+
+    if not isinstance(data, dict):
+        data = {}
+
+    response = _clean_response_text(data.get("response", ""))
+    if not response:
+        response = "I hear you. Tell me a little more about what feels hardest right now, and we can sort through it together."
+
+    mood = str(data.get("mood", "") or "").strip()
+    mood_aliases = {
+        "🤯 Overthinking": "🤯 Overwhelmed",
+        "💭 Reflective": _infer_mood_from_text(latest_query),
+    }
+    mood = mood_aliases.get(mood, mood)
+    if mood not in valid_moods or mood == "😐 Neutral":
+        inferred = _infer_mood_from_text(latest_query)
+        if inferred != "😐 Neutral":
+            mood = inferred
+    if mood not in valid_moods:
+        mood = "😐 Neutral"
+
+    stress = str(data.get("stress_level", "") or "").strip().title()
+    if stress not in {"Low", "Medium", "High"}:
+        stress = "High" if mood in {"😰 Anxious", "🤯 Overwhelmed"} else "Medium" if mood in {"😔 Sad", "😡 Angry", "😴 Tired"} else "Low"
+
+    try:
+        confidence = float(data.get("confidence_score", 82.0))
+    except (TypeError, ValueError):
+        confidence = 82.0
+    confidence = max(0.0, min(100.0, confidence))
+
+    raw_recommendations = data.get("recommendations", [])
+    if not isinstance(raw_recommendations, list):
+        raw_recommendations = []
+
+    allows_breathing = _message_allows_breathing(latest_query, mood)
+    recommendations = []
+    seen = set()
+    for item in raw_recommendations:
+        text = _clean_response_text(item)
+        if not text:
+            continue
+        lowered = text.lower()
+        if not allows_breathing and any(term in lowered for term in ("breath", "inhale", "exhale", "box breathing", "4-7-8")):
+            continue
+        normalized = lowered.rstrip(".")
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        recommendations.append(text)
+        if len(recommendations) == 3:
+            break
+
+    if not recommendations:
+        if mood == "😔 Sad":
+            recommendations = [
+                "Write down what hurt and what you needed in that moment.",
+                "Reach out to one safe person with a simple check-in.",
+                "Choose one small comforting action for the next 10 minutes.",
+            ]
+        elif mood == "😰 Anxious":
+            recommendations = [
+                "Name three facts you know for sure right now.",
+                "Try one grounding cycle: look around and name five things you can see.",
+                "Break the worry into one next action you can control.",
+            ]
+        elif mood == "🤯 Overwhelmed":
+            recommendations = [
+                "Pick the single most urgent task and pause the rest for now.",
+                "Make a two-column list: what is in your control and what is not.",
+                "Use the breathing helper only if your body feels tense or panicky.",
+            ]
+        elif mood == "💪 Motivated":
+            recommendations = [
+                "Choose a five-minute starter task.",
+                "Remove one distraction before beginning.",
+                "Use the Wellness Planner if this goal needs a daily routine.",
+            ]
+        else:
+            recommendations = [
+                "Name the strongest feeling in one word.",
+                "Choose one kind next step you can take today.",
+            ]
+
+    affirmation = _clean_response_text(data.get("affirmation", ""))
+    if not affirmation:
+        affirmation = "I can take this one step at a time."
+
+    return {
+        "response": response,
+        "mood": mood,
+        "stress_level": stress,
+        "confidence_score": confidence,
         "recommendations": recommendations,
         "affirmation": affirmation,
     }
@@ -303,11 +476,17 @@ def get_chat_response(messages: list, api_key: str = None) -> dict:
     try:
         client = get_client(api_key)
     except ValueError:
-        return _build_local_wellness_response(latest_query, reason="missing_key")
+        print("[ERROR] Gemini API key is missing.")
+        return _connection_error_payload()
     
     # 2. Format history prompt
-    history_prompt = "You are in a conversation. Read the history and respond to the LAST user message in the required JSON format.\n\n"
-    for msg in messages[:-1]:
+    recent_messages = messages[-10:]
+    prior_messages = recent_messages[:-1]
+    history_prompt = (
+        "Conversation context follows. Preserve continuity, infer the current concern from recent turns, "
+        "avoid repeating earlier recommendations, and respond to the LAST user message only.\n\n"
+    )
+    for msg in prior_messages:
         role_label = "User" if msg["role"] == "user" else "Assistant"
         content = msg["content"]
         try:
@@ -331,10 +510,11 @@ def get_chat_response(messages: list, api_key: str = None) -> dict:
                     response_mime_type="application/json",
                     response_schema=ChatResponseSchema,
                     system_instruction=SYSTEM_INSTRUCTION,
-                    temperature=0.7
+                    temperature=0.85
                 )
             )
             data = json.loads(response.text)
+            data = _normalize_chat_response(data, latest_query)
             
             # Double check domain restriction
             refusal_phrase = "I'm specifically designed to support mental wellness and emotional wellbeing"
@@ -342,23 +522,16 @@ def get_chat_response(messages: list, api_key: str = None) -> dict:
                 data["mood"] = "😐 Neutral"
                 data["stress_level"] = "Low"
                 data["confidence_score"] = 100.0
-                data["recommendations"] = ["💡 Ask a wellness query", "🧘 Breathe deeply for 10 seconds"]
+                data["recommendations"] = ["Share a stress, emotion, habit, or wellbeing concern."]
                 data["affirmation"] = "I focus my mind on positive wellness conversations."
                 
             return data
             
         except Exception as e:
             error_msg = str(e)
-            print(f"[DEBUG] Error generating content with {model_name}: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"[ERROR] Error generating content with {model_name}: {type(e).__name__}: {e}")
             if model_name == "gemini-flash-latest":
-                if "API key not valid" in error_msg or "API_KEY_INVALID" in error_msg or "invalid api key" in error_msg.lower():
-                    return _build_local_wellness_response(latest_query, reason="invalid_key")
-                if "ResourceExhausted" in error_msg or "429" in error_msg or "quota" in error_msg.lower():
-                    return _build_local_wellness_response(latest_query, reason="quota")
-
-                return _build_local_wellness_response(latest_query, reason="api_error")
+                return _connection_error_payload()
 
 def generate_wellness_plan(user_data: dict, api_key: str = None) -> dict:
     """
